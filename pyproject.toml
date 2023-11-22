@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "object_detect_nanodet"
+version = "0.1.0"
+description = "Object detection with nanodet"
+authors = ["anoduck <11767-anoduck@users.noreply.gitgud.io>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+nanodet = {git = "https://github.com/RangiLyu/nanodet.git"}
+simple-parsing = "^0.1.4"
+torch = "^2.1.0"
+torchvision = "^0.16.0"
+transformers = "^4.35.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
