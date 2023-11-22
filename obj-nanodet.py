@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from simple_parsing import parse
 from transformers import pipeline
 from PIL import Image
+from alive_progress import alive_bar
 # ---------------------------------------------
 from .nanodet.data.batch_process import stack_batch_img
 from .nanodet.data.collate import naive_collate
