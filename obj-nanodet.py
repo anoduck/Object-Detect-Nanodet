@@ -8,62 +8,57 @@ import os
 import cv2
 import numpy as np
 import torch
-from .nanodet.util import cfg,load_config, Logger
-from .nanodet.util import overlay_bbox_cv
+from time import time
+from .nanodet.nanodet.util import cfg, load_config, Logger, load_model_weight
+from .nanodet.nanodet.util import overlay_bbox_cv
 from dataclasses import dataclass
 from simple_parsing import parse
+from transformers import YolosImageProcessor, YolosForObjectDetection
 from transformers import pipeline
 from PIL import Image
 from alive_progress import alive_bar
 # ---------------------------------------------
-from .nanodet.data.batch_process import stack_batch_img
-from .nanodet.data.collate import naive_collate
-from .nanodet.data.transform import Pipeline
-from .nanodet.model.arch import build_model
-from .nanodet.util import Logger, cfg, load_config, load_model_weight
-from .nanodet.util.path import mkdir
-
-image_ext = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
-video_ext = ["mp4", "mov", "avi", "mkv"]
-
-pipe = pipeline("object-detection", model="hustvl/yolos-tiny")
+from .nanodet.nanodet.data.batch_process import stack_batch_img
+from .nanodet.nanodet.data.collate import naive_collate
+from .nanodet.nanodet.model.arch import build_model
+from .nanodet.nanodet.util.path import mkdir
 
 # Variables
 root = os.path.abspath(os.path.dirname(__file__))
-config_path = os.path.join(root, 'nanodet', 'config', 'nanodet-m.yml')
-model_path = ''
-
-load_config(cfg, config_path)
-logger = Logger(-1, use_tensorboard=False)
+cfg = 
+image_ext = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
+video_ext = ["mp4", "mov", "avi", "mkv"]
 
 
 @dataclass
 class Options:
+    """obj-nanodet.py = A speedier way to detect objects in images"""
     dir: str = os.path.join(root, 'images')  # directory containing images
-    cfg: str = config_path  # model config file
-    model: str = model_path  # model file
-    save: bool = True  # save results
-    camid: int = 0  # camera id
+    cfg: str = os.path.join(root, 'nanodet', 'config', 'nanodet.yml')  # model config file
+    sav: bool = True  # save results
+    rdir: str = os.path.join(root, 'results')  # directory to save results
+    cid: int = 0  # camera id
+    conf: float = 0.25  # confidence threshold
+
+
+Options = parse(Options, dest="Options")
 
 
 class Predictor(object):
-    def __init__(self, cfg, model_path, logger, device="cuda:0"):
+    def __init__(self, cfg, logger):
         self.cfg = cfg
-        self.device = device
-        model = build_model(cfg.model)
-        ckpt = torch.load(
-            model_path, map_location=lambda storage, loc: storage)
-        load_model_weight(model, ckpt, logger)
         if cfg.model.arch.backbone.name == "RepVGG":
             deploy_config = cfg.model
             deploy_config.arch.backbone.update({"deploy": True})
             deploy_model = build_model(deploy_config)
-            from nanodet.model.backbone.repvgg import repvgg_det_model_convert
+            from .nanodet.nanodet.model.backbone.repvgg import repvgg_det_model_convert
 
             model = repvgg_det_model_convert(model, deploy_model)
-        self.model = model.to(device).eval()
-        self.pipe = pipe(
-            cfg.data.val.pipe, cfg.data.val.keep_ratio)
+        self.model = YolosForObjectDetection.from_pretrained(
+            'hustvl/yolos-tiny')
+        ckpt = torch.load(self.model, map_location=lambda storage, loc: storage)
+        load_model_weight(self.model, ckpt, logger)
+        self.pipe = pipeline("object-detection", model="hustvl/yolos-tiny")
 
     def inference(self, img):
         img_info = {"id": 0}
@@ -96,30 +91,8 @@ class Predictor(object):
 
 
 # -----------------------------------------------------------------------------
-meta, res = predictor.inference(image_path)
-
-# -----------------------------------------------------------------------------
-def cv2_imshow(a, convert_bgr_to_rgb=True):
-    """A replacement for cv2.imshow() for use in Jupyter notebooks.
-    Args:
-        a: np.ndarray. shape (N, M) or (N, M, 1) is an NxM grayscale image. shape
-            (N, M, 3) is an NxM BGR color image. shape (N, M, 4) is an NxM BGRA color
-            image.
-        convert_bgr_to_rgb: switch to convert BGR to RGB channel.
-    """
-    a = a.clip(0, 255).astype('uint8')
-    # cv2 stores colors as BGR; convert to RGB
-    if convert_bgr_to_rgb and a.ndim == 3:
-        if a.shape[2] == 4:
-            a = cv2.cvtColor(a, cv2.COLOR_BGRA2RGBA)
-        else:
-            a = cv2.cvtColor(a, cv2.COLOR_BGR2RGB)
-    display(Image.fromarray(a))
-
-
-result = overlay_bbox_cv(meta['raw_img'][0], res[0],
-                         cfg.class_names, score_thresh=0.35)
-
+predictor = Predictor(cfg=cfg, model_path=model_path, logger=logger, device="cuda:0")
+meta, res = predictor.inference(img)
 
 # -----------------------------------------------------------------------------
 image = Image.open(requests.get(url, stream=True).raw)
@@ -149,74 +122,50 @@ for score, label, box in zip(results["scores"], results["labels"], results["boxe
 # -----------------------------------------------------------------------------
 
 
-def main():
-    args = parse_args()
+def get_image_list(path):
+    image_names = []
+    for maindir, subdir, file_name_list in os.walk(path):
+        for filename in file_name_list:
+            apath = os.path.join(maindir, filename)
+            ext = os.path.splitext(apath)[1]
+            if ext in image_ext:
+                image_names.append(apath)
+    return image_names
+
+
+def main(Options):
     local_rank = 0
     torch.backends.cudnn.enabled = False
     torch.backends.cudnn.benchmark = False
 
-    load_config(cfg, args.config)
+    load_config(cfg, Options.cfg)
     logger = Logger(local_rank, use_tensorboard=False)
-    predictor = Predictor(cfg, args.model, logger, device="cuda:0")
+    predictor = Predictor(cfg, Options.mod)
     logger.log('Press "Esc", "q" or "Q" to exit.')
     current_time = time.localtime()
     if args.demo == "image":
-        if os.path.isdir(args.path):
-            files = get_image_list(args.path)
+        if os.path.isdir(Options.dir):
+            files = get_image_list(Options.dir)
         else:
-            files = [args.path]
+            files = [Options.dir]
         files.sort()
         for image_name in files:
             meta, res = predictor.inference(image_name)
             result_image = predictor.visualize(
                 res[0], meta, cfg.class_names, 0.35)
-            if args.save_result:
+            if Options.sav:
                 save_folder = os.path.join(
-                    cfg.save_dir, time.strftime(
+                    Options.rdir, time.strftime(
                         "%Y_%m_%d_%H_%M_%S", current_time)
                 )
-                mkdir(local_rank, save_folder)
+                mkdir(save_folder)
                 save_file_name = os.path.join(
                     save_folder, os.path.basename(image_name))
                 cv2.imwrite(save_file_name, result_image)
             ch = cv2.waitKey(0)
             if ch == 27 or ch == ord("q") or ch == ord("Q"):
                 break
-    elif args.demo == "video" or args.demo == "webcam":
-        cap = cv2.VideoCapture(args.path if args.demo ==
-                               "video" else args.camid)
-        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)  # float
-        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        save_folder = os.path.join(
-            cfg.save_dir, time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
-        )
-        mkdir(local_rank, save_folder)
-        save_path = (
-            os.path.join(save_folder, args.path.replace(
-                "\\", "/").split("/")[-1])
-            if args.demo == "video"
-            else os.path.join(save_folder, "camera.mp4")
-        )
-        print(f"save_path is {save_path}")
-        vid_writer = cv2.VideoWriter(
-            save_path, cv2.VideoWriter_fourcc(
-                *"mp4v"), fps, (int(width), int(height))
-        )
-        while True:
-            ret_val, frame = cap.read()
-            if ret_val:
-                meta, res = predictor.inference(frame)
-                result_frame = predictor.visualize(
-                    res[0], meta, cfg.class_names, 0.35)
-                if args.save_result:
-                    vid_writer.write(result_frame)
-                ch = cv2.waitKey(1)
-                if ch == 27 or ch == ord("q") or ch == ord("Q"):
-                    break
-            else:
-                break
 
 
 if __name__ == "__main__":
-    main()
+    main(Options)
